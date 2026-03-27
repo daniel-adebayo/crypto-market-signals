@@ -101,7 +101,7 @@ def update_target_coins(con, valid_binance_symbols):
             if bsym in valid_binance_symbols:
                 targets.append({
                     'coin_id': coin['id'], 'name': coin['name'], 'symbol': coin['symbol'].upper(),
-                    'binance_symbol': bsym, 'rank': coin['market_cap_rank'], 'updated_at': datetime.utcnow()
+                    'binance_symbol': bsym, 'rank': coin['market_cap_rank'], 'image_url': coin['image'], 'updated_at': datetime.utcnow()
                 })
         
         if targets:
