@@ -6,7 +6,7 @@ final as (
         coin_id,
         name as coin_name,
         binance_symbol as symbol,
-        rank as market_cap_rank
+        rank as market_cap_rank,
         image_url
     from source
 )
