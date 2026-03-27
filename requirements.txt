@@ -1,0 +1,7 @@
+requests
+pandas
+duckdb==1.4.4
+python-dotenv
+tenacity
+dbt-duckdb==1.8.0
+dbt-core==1.8.0

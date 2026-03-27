@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: crypto_project
+    schema: main
+    tables:
+      - name: raw_klines
+      - name: raw_fx_rates
+      - name: target_coins

@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: fct_crypto_signals
+    description: "Hourly technical indicators for each coin."
+
+  - name: fct_fx_rates
+    description: "Daily USD/NGN rates with day-over-day change."
+    columns:
+      - name: fx_date
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_coins
+    description: "Lookup table for coin metadata."
+    columns:
+      - name: symbol
+        tests:
+          - unique
+          - not_null

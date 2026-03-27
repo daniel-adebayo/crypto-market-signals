@@ -1,0 +1,8 @@
+crypto_transform:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "md:crypto_project?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
+      extensions:
+        - motherducks
