@@ -2,13 +2,17 @@ name: Crypto Pipeline Hourly
 
 on:
   schedule:
-    # This runs every hour at minute 0
-    - cron: '0 * * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout Code
@@ -36,6 +40,23 @@ jobs:
         run: |
           cd crypto_dbt
           dbt deps
-          # '--profiles-dir .' tells dbt to use the profiles.yml inside the crypto_dbt folder
           dbt run --profiles-dir .
           dbt test --profiles-dir .
+
+      - name: Export Analytics Tables
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: |
+          mkdir -p data
+          for table in fct_crypto_signals dim_coins fct_fx_rates; do
+            echo "Exporting $table..."
+            python -c "import duckdb; con = duckdb.connect('md:crypto_project?motherduck_token=${{ secrets.MOTHERDUCK_TOKEN }}'); con.execute(\"COPY analytics.$table TO 'data/$table.csv' (HEADER, DELIMITER ',')\")"
+          done
+
+      - name: Commit and Push Data
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add data/*.csv
+          git commit -m "Update analytics data [skip ci]" || echo "No changes to commit"
+          git push
