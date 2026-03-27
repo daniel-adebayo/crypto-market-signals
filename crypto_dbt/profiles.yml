@@ -1,4 +1,4 @@
-crypto_transform:
+crypto_dbt:
   target: dev
   outputs:
     dev:
