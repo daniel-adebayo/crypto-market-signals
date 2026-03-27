@@ -10,14 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 
-# --- CONFIGURATION ---
+# CONFIG
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s')
 logger = logging.getLogger(__name__)
 
 # Dates
 BACKFILL_START_DATE = datetime(2025, 1, 1)
-# TODAY_DATE is a datetime.date object
 TODAY_DATE = datetime.utcnow().date()
 
 DB_NAME = "crypto_project"
@@ -27,8 +26,6 @@ CONN_STR = f"md:{DB_NAME}?motherduck_token={TOKEN}"
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
 BINANCE_URL = "https://api.binance.com/api/v3"
-
-# --- HELPER FUNCTIONS ---
 
 def get_valid_binance_symbols():
     """Fetches symbols currently trading on Binance to avoid mapping errors."""
@@ -42,7 +39,6 @@ def get_valid_binance_symbols():
         return set()
 
 def update_target_coins(con, valid_binance_symbols):
-    """Refreshes Top 10 list ONLY if it hasn't been updated in 24 hours."""
     con.execute("""
         CREATE TABLE IF NOT EXISTS target_coins (
             coin_id VARCHAR, name VARCHAR, symbol VARCHAR, 
@@ -78,28 +74,19 @@ def update_target_coins(con, valid_binance_symbols):
         logger.error(f"CoinGecko update failed: {e}")
 
 def update_fx_rates(con):
-    """
-    Tiered Waterfall FX Logic:
-    1. Check if Today's rate exists in DB.
-    2. Backfill missing history from GitHub Archive.
-    3. Call AlphaVantage ONLY if Today is missing from all other sources.
-    """
     con.execute("""
         CREATE TABLE IF NOT EXISTS raw_fx_rates (
             date DATE PRIMARY KEY, base_currency VARCHAR, target_currency VARCHAR, rate DOUBLE
         );
     """)
     
-    # --- GATE 1: CHECK DB STATE ---
     res = con.execute("SELECT MAX(date) FROM raw_fx_rates").fetchone()
-    # DuckDB DATE maps directly to Python datetime.date
     last_db_date = res[0] if res[0] else None
 
     if last_db_date == TODAY_DATE:
         logger.info(f"Gate 1 [FX]: Rate for {TODAY_DATE} already in DB. Skipping API calls.")
         return
 
-    # --- GATE 2: INCREMENTAL HISTORY & WATERFALL ---
     num_days = (TODAY_DATE - BACKFILL_START_DATE.date()).days + 1
     required_dates = [BACKFILL_START_DATE.date() + timedelta(days=x) for x in range(num_days)]
     
@@ -115,8 +102,7 @@ def update_fx_rates(con):
     
     for d in missing_dates:
         date_str = d.strftime('%Y-%m-%d')
-        
-        # Scenario A: Historical Dates (Always use Archive)
+
         if d < TODAY_DATE:
             url = f"https://{date_str}.currency-api.pages.dev/v1/currencies/usd.json"
             try:
@@ -128,7 +114,6 @@ def update_fx_rates(con):
                         logger.info(f"Archive Sync: Found history for {date_str}")
             except: continue
         
-        # Scenario B: Today's Date (Try Archive first, then AlphaVantage)
         else:
             url = f"https://{date_str}.currency-api.pages.dev/v1/currencies/usd.json"
             found_today = False
@@ -217,12 +202,9 @@ def main():
     """)
 
     try:
-        # Step 1: Metadata & FX (Stateful once-per-day logic)
         valid_symbols = get_valid_binance_symbols()
         update_target_coins(con, valid_symbols)
         update_fx_rates(con)
-        
-        # Step 2: Incremental Crypto Data
         targets = con.execute("SELECT binance_symbol FROM target_coins").fetchdf()
         symbol_list = targets['binance_symbol'].tolist()
         
