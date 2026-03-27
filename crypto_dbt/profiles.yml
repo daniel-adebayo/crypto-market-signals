@@ -5,4 +5,4 @@ crypto_dbt:
       type: duckdb
       path: "md:crypto_project?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
       extensions:
-        - motherducks
+        - motherduck

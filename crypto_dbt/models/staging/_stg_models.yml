@@ -5,21 +5,21 @@ models:
     description: "Cleaned hourly price data from Binance"
     columns:
       - name: symbol
-        tests:
+        data_tests:
           - not_null
       - name: price_timestamp
         description: "The start of the hourly candle"
-        tests:
+        data_tests:
           - not_null
       - name: price_usd
-        tests:
+        data_tests:
           - not_null
 
   - name: stg_fx_rates
     description: "Daily USD to NGN exchange rates"
     columns:
       - name: fx_date
-        tests:
+        data_tests:
           - not_null
           - unique
 
@@ -27,6 +27,6 @@ models:
     description: "Metadata for the top 10 coins we are tracking"
     columns:
       - name: symbol
-        tests:
+        data_tests:
           - not_null
           - unique

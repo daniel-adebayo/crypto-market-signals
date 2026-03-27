@@ -8,7 +8,7 @@ models:
     description: "Daily USD/NGN rates with day-over-day change."
     columns:
       - name: fx_date
-        tests:
+        data_tests:
           - unique
           - not_null
 
@@ -16,6 +16,6 @@ models:
     description: "Lookup table for coin metadata."
     columns:
       - name: symbol
-        tests:
+        data_tests:
           - unique
           - not_null
