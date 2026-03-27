@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 
-# CONFIG
+# --- CONFIGURATION ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,40 +23,48 @@ TOKEN = os.getenv("MOTHERDUCK_TOKEN")
 AV_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") 
 CONN_STR = f"md:{DB_NAME}?motherduck_token={TOKEN}"
 
-# Overkill measure to prevent binance cloud run failures (fingers crossed)
+# Standard Browser Headers to bypass simple bot filters
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+
+# BINANCE WATERFALL SETUP
 BINANCE_ENDPOINTS = [
+    "https://data-api.binance.vision/api/v3",  # Best for GitHub Actions (Public Data)
+    "https://api.binance.us/api/v3",           # Fallback (Works in US data centers)
     "https://api3.binance.com/api/v3",
-    "https://api-g.binance.com/api/v3",
-    "https://api1.binance.com/api/v3",
-    "https://api2.binance.com/api/v3",
-    "https://api.binance.com/api/v3"
+    "https://api-g.binance.com/api/v3"
 ]
 
 def get_working_endpoint():
+    """Tests multiple Binance mirrors to bypass regional/cloud geo-blocks."""
     logger.info("Testing Binance endpoints to bypass geo-blocks...")
+    
     for url in BINANCE_ENDPOINTS:
         try:
-            r = requests.get(f"{url}/ping", timeout=5)
+            r = requests.get(f"{url}/ping", headers=HEADERS, timeout=10)
             if r.status_code == 200:
                 logger.info(f"Connected successfully to: {url}")
                 return url
-        except Exception:
-            logger.warning(f"Endpoint blocked or unreachable: {url}")
+        except Exception as e:
+            logger.warning(f"Endpoint {url} failed: {e}")
             continue
-    logger.error("All Binance endpoints failed. Defaulting to api3.")
-    return BINANCE_ENDPOINTS[0]
 
+    logger.error("All endpoints failed. Defaulting to Vision API.")
+    return "https://data-api.binance.vision/api/v3"
+
+# GLOBAL URL
 BINANCE_URL = get_working_endpoint()
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+
+# --- HELPER FUNCTIONS ---
 
 def get_valid_binance_symbols():
     """Fetches symbols currently trading on the selected Binance mirror."""
     try:
-        response = requests.get(f"{BINANCE_URL}/exchangeInfo", timeout=15)
+        response = requests.get(f"{BINANCE_URL}/exchangeInfo", headers=HEADERS, timeout=15)
         response.raise_for_status()
         data = response.json()
         symbols = {s['symbol'] for s in data['symbols'] if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT'}
-        logger.info(f"Validated {len(symbols)} USDT pairs on this mirror.")
+        logger.info(f"Validated {len(symbols)} USDT pairs on {BINANCE_URL}.")
         return symbols
     except Exception as e:
         logger.error(f"Failed to fetch exchange info from {BINANCE_URL}: {e}")
@@ -75,9 +83,8 @@ def update_target_coins(con, valid_binance_symbols):
     """)
 
     res = con.execute("SELECT MAX(updated_at) FROM target_coins").fetchone()
-    # If updated within last 23 hours, skip to save CoinGecko rate limits
     if res[0] and (datetime.utcnow() - res[0]) < timedelta(hours=23):
-        logger.info("Target coins recently updated. Skipping CoinGecko.")
+        logger.info("Target coins recently updated. Skipping.")
         return
 
     logger.info("Fetching fresh Top 10 list from CoinGecko...")
@@ -98,7 +105,7 @@ def update_target_coins(con, valid_binance_symbols):
                 })
         
         if targets:
-            df = pd.DataFrame(targets[:10]) # Keep only the top 10 valid
+            df = pd.DataFrame(targets[:10])
             con.execute("INSERT OR REPLACE INTO target_coins SELECT * FROM df")
             logger.info(f"Top 10 tracked symbols: {df['symbol'].tolist()}")
     except Exception as e:
@@ -126,22 +133,19 @@ def update_fx_rates(con):
                 con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", [TODAY_DATE, rate])
                 logger.info(f"Saved AlphaVantage FX: 1 USD = {rate} NGN")
             else:
-                logger.warning(f"AlphaVantage could not provide rate (Check API Limit): {data}")
+                logger.warning(f"AlphaVantage error/limit: {data}")
         except Exception as e:
             logger.error(f"AlphaVantage Error: {e}")
 
+    # History Sync
     all_history = con.execute("SELECT date FROM raw_fx_rates").fetchall()
     existing_dates = {r[0] for r in all_history}
-    
     num_days = (TODAY_DATE - BACKFILL_START_DATE.date()).days
-    missing = []
-    for i in range(num_days):
-        d = BACKFILL_START_DATE.date() + timedelta(days=i)
-        if d not in existing_dates:
-            missing.append(d)
+    missing = [BACKFILL_START_DATE.date() + timedelta(days=i) for i in range(num_days) 
+               if BACKFILL_START_DATE.date() + timedelta(days=i) not in existing_dates]
 
     if missing:
-        logger.info(f"Backfilling {len(missing)} historical FX dates from archive...")
+        logger.info(f"Backfilling {len(missing)} FX dates from archive...")
         for d in missing:
             date_str = d.strftime('%Y-%m-%d')
             url = f"https://{date_str}.currency-api.pages.dev/v1/currencies/usd.json"
@@ -156,23 +160,18 @@ def update_fx_rates(con):
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_binance_klines(symbol, start_ts):
     params = {'symbol': symbol, 'interval': '1h', 'startTime': start_ts, 'limit': 1000}
-    res = requests.get(f"{BINANCE_URL}/klines", params=params, timeout=15)
+    res = requests.get(f"{BINANCE_URL}/klines", params=params, headers=HEADERS, timeout=15)
     res.raise_for_status()
     return res.json()
 
 def process_single_symbol(symbol):
-
     thread_con = duckdb.connect(CONN_STR)
     try:
         res = thread_con.execute("SELECT MAX(open_time) FROM raw_klines WHERE symbol = ?", [symbol]).fetchone()
-        if res[0]:
-            start_ts = int(res[0].timestamp() * 1000) + 1
-        else:
-            start_ts = int(BACKFILL_START_DATE.timestamp() * 1000)
+        start_ts = int(res[0].timestamp() * 1000) + 1 if res[0] else int(BACKFILL_START_DATE.timestamp() * 1000)
 
         data = fetch_binance_klines(symbol, start_ts)
-        if not data:
-            return 0
+        if not data: return 0
         
         df = pd.DataFrame(data, columns=[
             'open_time', 'open', 'high', 'low', 'close', 'volume', 
@@ -195,7 +194,6 @@ def main():
     logger.info(f"=== Starting Pipeline Run | Mirror: {BINANCE_URL} ===")
     con = duckdb.connect(CONN_STR)
     
-    # Init Table
     con.execute("""
         CREATE TABLE IF NOT EXISTS raw_klines (
             symbol VARCHAR, open_time TIMESTAMP, open DOUBLE, high DOUBLE, 
@@ -205,22 +203,19 @@ def main():
     """)
 
     try:
-        # 1. Get symbols from working mirror
         valid_symbols = get_valid_binance_symbols()
         if not valid_symbols:
             logger.error("No connectivity to Binance mirrors. Aborting.")
             return
 
-        # 2. Update Top 10 and FX
         update_target_coins(con, valid_symbols)
         update_fx_rates(con)
         
-        # 3. Parallel Data Fetch
         target_df = con.execute("SELECT binance_symbol FROM target_coins").fetchdf()
         symbols = target_df['binance_symbol'].tolist()
         
         if not symbols:
-            logger.warning("Target coins table empty. Verify CoinGecko status.")
+            logger.warning("Target coins table empty.")
             return
 
         logger.info(f"Updating {len(symbols)} coins incrementally...")
