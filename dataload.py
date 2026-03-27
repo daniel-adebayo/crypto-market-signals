@@ -78,7 +78,7 @@ def update_target_coins(con, valid_binance_symbols):
     con.execute("""
         CREATE TABLE IF NOT EXISTS target_coins (
             coin_id VARCHAR, name VARCHAR, symbol VARCHAR, 
-            binance_symbol VARCHAR PRIMARY KEY, rank INTEGER, updated_at TIMESTAMP
+            binance_symbol VARCHAR PRIMARY KEY, rank INTEGER, image_url VARCHAR, updated_at TIMESTAMP
         );
     """)
 
