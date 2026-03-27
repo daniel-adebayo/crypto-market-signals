@@ -15,7 +15,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s')
 logger = logging.getLogger(__name__)
 
-# Dates
 BACKFILL_START_DATE = datetime(2025, 1, 1)
 TODAY_DATE = datetime.utcnow().date()
 
@@ -24,21 +23,50 @@ TOKEN = os.getenv("MOTHERDUCK_TOKEN")
 AV_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") 
 CONN_STR = f"md:{DB_NAME}?motherduck_token={TOKEN}"
 
+# Overkill measure to prevent binance cloud run failures (fingers crossed)
+BINANCE_ENDPOINTS = [
+    "https://api3.binance.com/api/v3",
+    "https://api-g.binance.com/api/v3",
+    "https://api1.binance.com/api/v3",
+    "https://api2.binance.com/api/v3",
+    "https://api.binance.com/api/v3"
+]
+
+def get_working_endpoint():
+    logger.info("Testing Binance endpoints to bypass geo-blocks...")
+    for url in BINANCE_ENDPOINTS:
+        try:
+            r = requests.get(f"{url}/ping", timeout=5)
+            if r.status_code == 200:
+                logger.info(f"Connected successfully to: {url}")
+                return url
+        except Exception:
+            logger.warning(f"Endpoint blocked or unreachable: {url}")
+            continue
+    logger.error("All Binance endpoints failed. Defaulting to api3.")
+    return BINANCE_ENDPOINTS[0]
+
+BINANCE_URL = get_working_endpoint()
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
-BINANCE_URL = "https://api.binance.com/api/v3"
 
 def get_valid_binance_symbols():
-    """Fetches symbols currently trading on Binance to avoid mapping errors."""
+    """Fetches symbols currently trading on the selected Binance mirror."""
     try:
-        response = requests.get(f"{BINANCE_URL}/exchangeInfo", timeout=10)
+        response = requests.get(f"{BINANCE_URL}/exchangeInfo", timeout=15)
         response.raise_for_status()
         data = response.json()
-        return {s['symbol'] for s in data['symbols'] if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT'}
+        symbols = {s['symbol'] for s in data['symbols'] if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT'}
+        logger.info(f"Validated {len(symbols)} USDT pairs on this mirror.")
+        return symbols
     except Exception as e:
-        logger.error(f"Failed to fetch Binance exchange info: {e}")
+        logger.error(f"Failed to fetch exchange info from {BINANCE_URL}: {e}")
         return set()
 
 def update_target_coins(con, valid_binance_symbols):
+    if not valid_binance_symbols:
+        logger.warning("No Binance symbols available. Skipping Top 10 update.")
+        return
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS target_coins (
             coin_id VARCHAR, name VARCHAR, symbol VARCHAR, 
@@ -46,19 +74,22 @@ def update_target_coins(con, valid_binance_symbols):
         );
     """)
 
-    result = con.execute("SELECT MAX(updated_at) FROM target_coins").fetchone()
-    if result[0] and (datetime.utcnow() - result[0]) < timedelta(hours=24):
-        logger.info("Gate 1 [Coins]: Updated within 24h. Skipping CoinGecko.")
+    res = con.execute("SELECT MAX(updated_at) FROM target_coins").fetchone()
+    # If updated within last 23 hours, skip to save CoinGecko rate limits
+    if res[0] and (datetime.utcnow() - res[0]) < timedelta(hours=23):
+        logger.info("Target coins recently updated. Skipping CoinGecko.")
         return
 
-    logger.info("Gate 2 [Coins]: Data stale. Fetching from CoinGecko...")
-    params = {'vs_currency': 'usd', 'order': 'market_cap_desc', 'per_page': 15, 'page': 1}
+    logger.info("Fetching fresh Top 10 list from CoinGecko...")
+    params = {'vs_currency': 'usd', 'order': 'market_cap_desc', 'per_page': 25, 'page': 1}
     
     try:
-        res = requests.get(COINGECKO_URL, params=params, timeout=10)
+        res = requests.get(COINGECKO_URL, params=params, timeout=15)
         res.raise_for_status()
+        coins_json = res.json()
+        
         targets = []
-        for coin in res.json():
+        for coin in coins_json:
             bsym = f"{coin['symbol'].upper()}USDT"
             if bsym in valid_binance_symbols:
                 targets.append({
@@ -67,11 +98,11 @@ def update_target_coins(con, valid_binance_symbols):
                 })
         
         if targets:
-            df = pd.DataFrame(targets[:10])
+            df = pd.DataFrame(targets[:10]) # Keep only the top 10 valid
             con.execute("INSERT OR REPLACE INTO target_coins SELECT * FROM df")
-            logger.info(f"Top 10 Updated: {', '.join(df['symbol'].tolist())}")
+            logger.info(f"Top 10 tracked symbols: {df['symbol'].tolist()}")
     except Exception as e:
-        logger.error(f"CoinGecko update failed: {e}")
+        logger.error(f"CoinGecko fetch failed: {e}")
 
 def update_fx_rates(con):
     con.execute("""
@@ -80,116 +111,88 @@ def update_fx_rates(con):
         );
     """)
     
-    res = con.execute("SELECT MAX(date) FROM raw_fx_rates").fetchone()
-    last_db_date = res[0] if res[0] else None
+    res = con.execute("SELECT COUNT(*) FROM raw_fx_rates WHERE date = ?", [TODAY_DATE]).fetchone()
+    if res[0] > 0:
+        logger.info(f"FX Rate for {TODAY_DATE} is already in the database.")
+    else:
+        logger.info(f"FX Rate for {TODAY_DATE} missing. Calling AlphaVantage...")
+        try:
+            av_url = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=NGN&apikey={AV_API_KEY}"
+            res_av = requests.get(av_url, timeout=15)
+            data = res_av.json()
+            rate_data = data.get("Realtime Currency Exchange Rate")
+            if rate_data:
+                rate = float(rate_data.get("5. Exchange Rate"))
+                con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", [TODAY_DATE, rate])
+                logger.info(f"Saved AlphaVantage FX: 1 USD = {rate} NGN")
+            else:
+                logger.warning(f"AlphaVantage could not provide rate (Check API Limit): {data}")
+        except Exception as e:
+            logger.error(f"AlphaVantage Error: {e}")
 
-    if last_db_date == TODAY_DATE:
-        logger.info(f"Gate 1 [FX]: Rate for {TODAY_DATE} already in DB. Skipping API calls.")
-        return
-
-    num_days = (TODAY_DATE - BACKFILL_START_DATE.date()).days + 1
-    required_dates = [BACKFILL_START_DATE.date() + timedelta(days=x) for x in range(num_days)]
+    all_history = con.execute("SELECT date FROM raw_fx_rates").fetchall()
+    existing_dates = {r[0] for r in all_history}
     
-    existing_rows = con.execute("SELECT date FROM raw_fx_rates").fetchall()
-    existing_set = {r[0] for r in existing_rows}
-    
-    missing_dates = [d for d in required_dates if d not in existing_set]
+    num_days = (TODAY_DATE - BACKFILL_START_DATE.date()).days
+    missing = []
+    for i in range(num_days):
+        d = BACKFILL_START_DATE.date() + timedelta(days=i)
+        if d not in existing_dates:
+            missing.append(d)
 
-    if not missing_dates:
-        return
-
-    logger.info(f"Gate 2 [FX]: Syncing {len(missing_dates)} missing dates.")
-    
-    for d in missing_dates:
-        date_str = d.strftime('%Y-%m-%d')
-
-        if d < TODAY_DATE:
+    if missing:
+        logger.info(f"Backfilling {len(missing)} historical FX dates from archive...")
+        for d in missing:
+            date_str = d.strftime('%Y-%m-%d')
             url = f"https://{date_str}.currency-api.pages.dev/v1/currencies/usd.json"
             try:
                 r = requests.get(url, timeout=5)
                 if r.status_code == 200:
-                    rate = r.json().get('usd', {}).get('ngn')
-                    if rate:
-                        con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", (d, float(rate)))
-                        logger.info(f"Archive Sync: Found history for {date_str}")
+                    val = r.json().get('usd', {}).get('ngn')
+                    if val:
+                        con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", [d, float(val)])
             except: continue
-        
-        else:
-            url = f"https://{date_str}.currency-api.pages.dev/v1/currencies/usd.json"
-            found_today = False
-            try:
-                r = requests.get(url, timeout=5)
-                if r.status_code == 200:
-                    rate = r.json().get('usd', {}).get('ngn')
-                    if rate:
-                        con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", (d, float(rate)))
-                        logger.info(f"Archive Success: Found TODAY ({date_str}) in archive.")
-                        found_today = True
-            except: pass
-
-            if not found_today:
-                logger.info(f"Gate 3 [FX]: Today not in Archive. Calling AlphaVantage...")
-                try:
-                    av_url = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=NGN&apikey={AV_API_KEY}"
-                    res_av = requests.get(av_url, timeout=10)
-                    data = res_av.json()
-                    rate_data = data.get("Realtime Currency Exchange Rate")
-                    if rate_data:
-                        rate = float(rate_data.get("5. Exchange Rate"))
-                        con.execute("INSERT OR REPLACE INTO raw_fx_rates VALUES (?, 'USD', 'NGN', ?)", (d, rate))
-                        logger.info(f"AlphaVantage Success: 1 USD = {rate} NGN")
-                    else:
-                        logger.warning(f"AlphaVantage Limit/Error: {data}")
-                except Exception as e:
-                    logger.error(f"AlphaVantage Connection Error: {e}")
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_binance_klines(symbol, start_ts):
     params = {'symbol': symbol, 'interval': '1h', 'startTime': start_ts, 'limit': 1000}
-    res = requests.get(f"{BINANCE_URL}/klines", params=params, timeout=10)
+    res = requests.get(f"{BINANCE_URL}/klines", params=params, timeout=15)
     res.raise_for_status()
     return res.json()
 
 def process_single_symbol(symbol):
-    """Incremental fetch for crypto prices based on last close_time."""
+
     thread_con = duckdb.connect(CONN_STR)
     try:
-        res = thread_con.execute(f"SELECT MAX(open_time) FROM raw_klines WHERE symbol = '{symbol}'").fetchone()
-        start_ts = int(res[0].timestamp() * 1000) + 1 if res[0] else int(BACKFILL_START_DATE.timestamp() * 1000)
+        res = thread_con.execute("SELECT MAX(open_time) FROM raw_klines WHERE symbol = ?", [symbol]).fetchone()
+        if res[0]:
+            start_ts = int(res[0].timestamp() * 1000) + 1
+        else:
+            start_ts = int(BACKFILL_START_DATE.timestamp() * 1000)
 
-        total_rows = 0
-        while True:
-            data = fetch_binance_klines(symbol, start_ts)
-            if not data: break
-            
-            df = pd.DataFrame(data, columns=[
-                'open_time', 'open', 'high', 'low', 'close', 'volume', 
-                'close_time', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'
-            ])
-            
-            df['symbol'] = symbol
-            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
-            
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = pd.to_numeric(df[col])
-            
-            df_to_load = df[['symbol', 'open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time']]
-            thread_con.execute("INSERT OR REPLACE INTO raw_klines SELECT * FROM df_to_load")
-            
-            batch_size = len(df)
-            total_rows += batch_size
-            if batch_size < 1000: break
-            
-            start_ts = int(data[-1][0]) + 1
-            if total_rows > 35000: break 
-
-        return total_rows
+        data = fetch_binance_klines(symbol, start_ts)
+        if not data:
+            return 0
+        
+        df = pd.DataFrame(data, columns=[
+            'open_time', 'open', 'high', 'low', 'close', 'volume', 
+            'close_time', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'
+        ])
+        
+        df['symbol'] = symbol
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+        df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col])
+        
+        df_clean = df[['symbol', 'open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time']]
+        thread_con.execute("INSERT OR REPLACE INTO raw_klines SELECT * FROM df_clean")
+        return len(df)
     finally:
         thread_con.close()
 
 def main():
-    logger.info("=== Starting ELT Pipeline ===")
+    logger.info(f"=== Starting Pipeline Run | Mirror: {BINANCE_URL} ===")
     con = duckdb.connect(CONN_STR)
     
     # Init Table
@@ -202,29 +205,37 @@ def main():
     """)
 
     try:
+        # 1. Get symbols from working mirror
         valid_symbols = get_valid_binance_symbols()
-        update_target_coins(con, valid_symbols)
-        update_fx_rates(con)
-        targets = con.execute("SELECT binance_symbol FROM target_coins").fetchdf()
-        symbol_list = targets['binance_symbol'].tolist()
-        
-        if not symbol_list:
-            logger.warning("No tracking symbols found.")
+        if not valid_symbols:
+            logger.error("No connectivity to Binance mirrors. Aborting.")
             return
 
-        logger.info(f"Syncing {len(symbol_list)} symbols incrementally...")
+        # 2. Update Top 10 and FX
+        update_target_coins(con, valid_symbols)
+        update_fx_rates(con)
+        
+        # 3. Parallel Data Fetch
+        target_df = con.execute("SELECT binance_symbol FROM target_coins").fetchdf()
+        symbols = target_df['binance_symbol'].tolist()
+        
+        if not symbols:
+            logger.warning("Target coins table empty. Verify CoinGecko status.")
+            return
+
+        logger.info(f"Updating {len(symbols)} coins incrementally...")
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(process_single_symbol, s): s for s in symbol_list}
+            futures = {executor.submit(process_single_symbol, s): s for s in symbols}
             for future in as_completed(futures):
                 s = futures[future]
                 try:
                     count = future.result()
-                    logger.info(f"Finished {s}: {count} new rows added.")
+                    logger.info(f"Completed {s}: {count} new rows.")
                 except Exception as e:
-                    logger.error(f"Error in {s}: {e}")
+                    logger.error(f"Error syncing {s}: {e}")
 
     except Exception as e:
-        logger.error(f"FATAL ERROR: {e}")
+        logger.error(f"Main Pipeline Failure: {e}")
         traceback.print_exc()
     finally:
         con.close()
