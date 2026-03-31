@@ -48,7 +48,7 @@ jobs:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
           mkdir -p data
-          for table in fct_crypto_signals dim_coins fct_fx_rates; do
+          for table in fct_crypto_signals dim_coins fct_fx_rates fct_price_history; do
             echo "Exporting $table..."
             python -c "import duckdb; con = duckdb.connect('md:crypto_project?motherduck_token=${{ secrets.MOTHERDUCK_TOKEN }}'); con.execute(\"COPY analytics.$table TO 'data/$table.csv' (HEADER, DELIMITER ',')\")"
           done

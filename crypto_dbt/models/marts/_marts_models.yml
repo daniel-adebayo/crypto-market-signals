@@ -19,3 +19,10 @@ models:
         data_tests:
           - unique
           - not_null
+  - name: fct_price_history
+    description: "Full hourly OHLC history in USD and NGN."
+    data_tests:
+      - unique:
+          column_name: "(symbol || '-' || price_timestamp)"
+      - not_null:
+          column_name: price_timestamp
