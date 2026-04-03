@@ -1,10 +1,10 @@
 symbol,coin_name,market_cap_rank,image_url,is_top_5
 USDCUSDT,USDC,6,https://coin-images.coingecko.com/coins/images/6319/large/USDC.png?1769615602,false
-ADAUSDT,Cardano,15,https://coin-images.coingecko.com/coins/images/975/large/cardano.png?1696502090,false
+ADAUSDT,Cardano,14,https://coin-images.coingecko.com/coins/images/975/large/cardano.png?1696502090,false
 TRXUSDT,TRON,8,https://coin-images.coingecko.com/coins/images/1094/large/tron-logo.png?1696502193,false
 ETHUSDT,Ethereum,2,https://coin-images.coingecko.com/coins/images/279/large/ethereum.png?1696501628,true
 BNBUSDT,BNB,5,https://coin-images.coingecko.com/coins/images/825/large/bnb-icon2_2x.png?1696501970,true
-BCHUSDT,Bitcoin Cash,16,https://coin-images.coingecko.com/coins/images/780/large/bitcoin-cash-circle.png?1696501932,false
+BCHUSDT,Bitcoin Cash,15,https://coin-images.coingecko.com/coins/images/780/large/bitcoin-cash-circle.png?1696501932,false
 BTCUSDT,Bitcoin,1,https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696501400,true
 XRPUSDT,XRP,4,https://coin-images.coingecko.com/coins/images/44/large/xrp-symbol-white-128.png?1696501442,true
 DOGEUSDT,Dogecoin,10,https://coin-images.coingecko.com/coins/images/5/large/dogecoin.png?1696501409,false
