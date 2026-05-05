@@ -1,6 +1,6 @@
 symbol,coin_name,market_cap_rank,image_url,is_top_5
 USDCUSDT,USDC,6,https://coin-images.coingecko.com/coins/images/6319/large/USDC.png?1769615602,false
-ADAUSDT,Cardano,15,https://coin-images.coingecko.com/coins/images/975/large/cardano.png?1696502090,false
+ADAUSDT,Cardano,14,https://coin-images.coingecko.com/coins/images/975/large/cardano.png?1696502090,false
 TRXUSDT,TRON,8,https://coin-images.coingecko.com/coins/images/1094/large/photo_2026-04-13_09-59-16.png?1776048311,false
 ETHUSDT,Ethereum,2,https://coin-images.coingecko.com/coins/images/279/large/ethereum.png?1696501628,true
 BNBUSDT,BNB,5,https://coin-images.coingecko.com/coins/images/825/large/bnb-icon2_2x.png?1696501970,true
